@@ -1,0 +1,17 @@
+{
+  "name": "posts-api",
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/server.ts",
+    "prettier": "prettier --write \"src/**/*.ts\" --config \".prettierrc.json\""
+  },
+  "dependencies": {
+    "@hono/node-server": "^1.13.5",
+    "hono": "^4.6.9"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.17",
+    "prettier": "3.3.3",
+    "tsx": "^4.7.1"
+  }
+}

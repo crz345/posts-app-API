@@ -1,112 +1,128 @@
 import { Hono } from "hono";
 import { db } from "../db";
 import { posts } from "../db/schema";
-import { eq } from "drizzle-orm";
-import { createPostSchema, updatePostSchema } from "../validators/schemas";
-import { zValidator } from "@hono/zod-validator"; 
-import { getPostSchema } from "../validators/schemas";
+import {
+  createPostSchema,
+  updatePostSchema,
+  getPostSchema,
+  queryParamsSchema
+} from "../validators/schemas";
+import { zValidator } from "@hono/zod-validator";
+import { HTTPException } from "hono/http-exception";
+import { eq, asc, desc, like, count, SQL, and } from "drizzle-orm";
 
+const postRoutes = new Hono();
 
-const postsRoute = new Hono();
-
-// GET all posts
-postsRoute.get("/posts", async (c) => {
-    try {
-      const allPosts = await db.select().from(posts);
-      return c.json(allPosts);
-    } catch (error) {
-      console.error("Error fetching posts:", error);
-      return c.json({ error: "Failed to fetch posts" }, 500);
+// Get all posts with optional sorting, filtering, searching, and pagination
+postRoutes.get("/posts", zValidator("query", queryParamsSchema), async (c) => {
+    const { sort, search, page = 1, limit = 10 } = c.req.valid("query");
+  
+    const whereClause: (SQL | undefined)[] = [];
+    if (search) {
+      whereClause.push(like(posts.content, `%${search}%`));
     }
-  });
-
-// GET a specific post by ID
-postsRoute.get(
-    "/posts/:id", 
-    zValidator("param", getPostSchema),
-    async (c) => {
-        const { id } = c.req.valid("param");
-    try {
-      const post = await db.select().from(posts).where(eq(posts.id, id)).get();
-      if (!post) {
-        return c.json({ error: "Post not found" }, 404);
-      }
-      return c.json(post);
-    } catch (error) {
-      console.error(`Error fetching post ${id}:`, error);
-      return c.json({ error: "Failed to fetch post" }, 500);
+  
+    const orderByClause: SQL[] = [];
+    if (sort === "desc") {
+      orderByClause.push(desc(posts.date));
+    } else if (sort === "asc") {
+      orderByClause.push(asc(posts.date));
     }
+  
+    const offset = (page - 1) * limit;
+  
+    const [allPosts, [{ totalCount }]] = await Promise.all([
+      db
+        .select()
+        .from(posts)
+        .where(and(...whereClause))
+        .orderBy(...orderByClause)
+        .limit(limit)
+        .offset(offset),
+      db
+        .select({ totalCount: count() })
+        .from(posts)
+        .where(and(...whereClause)),
+    ]);
+  
+    return c.json({
+      posts: allPosts,
+      page,
+      limit,
+      total: totalCount,
+    });
   });
-
-// DELETE a post
-postsRoute.delete(
-    "/posts/:id", 
-    zValidator("param", getPostSchema),
-    async (c) => {
+// Get a single post by id
+postRoutes.get(
+  "/posts/:id", 
+  zValidator("param", getPostSchema), 
+  async (c) => {
     const id = parseInt(c.req.param("id"));
-    try {
-        const { id } = c.req.valid("param"); 
-      const deletedPost = await db
-        .delete(posts)
-        .where(eq(posts.id, id))
-        .returning()
-        .get();
-      if (!deletedPost) {
-        return c.json({ error: "Post not found" }, 404);
-      }
-      return c.json(deletedPost);
-    } catch (error) {
-      console.error(`Error deleting post ${id}:`, error);
-      return c.json({ error: "Failed to delete post" }, 500);
+    const post = await db.select().from(posts).where(eq(posts.id, id)).get(); 
+    if (!post) {
+      throw new HTTPException(404, { message: "Post not found" });
     }
-  });
+    return c.json(post); 
+  }
+);
 
-// POST a new post with input validation
-postsRoute.post(
-    "/posts", 
-    zValidator("json", createPostSchema), 
-    async (c) => {
-      const { content } = c.req.valid("json");
-    try {
-      const newPost = await db
-        .insert(posts)
-        .values({
-          content,
-          date: new Date(),
-        })
-        .returning()
-        .get();
-      return c.json(newPost, 201);
-    } catch (error) {
-      console.error("Error creating post:", error);
-      return c.json({ error: "Failed to create post" }, 500);
+// Delete a post by id
+postRoutes.delete(
+  "/posts/:id",
+  zValidator("param", getPostSchema),
+  async (c) => {
+    const id = parseInt(c.req.param("id"));
+    const deletedPost = await db
+      .delete(posts)
+      .where(eq(posts.id, id))
+      .returning()
+      .get();
+    if (!deletedPost) {
+      throw new HTTPException(404, { message: "Post not found" });
     }
-  });
+    return c.json(deletedPost);
+  },
+);
 
-// PATCH (update) a post
-postsRoute.patch(
-    "/posts/:id", 
-    zValidator("param", getPostSchema),
-    zValidator("json", updatePostSchema),
-    async (c) => {
+// Create a new post
+postRoutes.post(
+  "/posts", 
+  zValidator("json", createPostSchema), 
+  async (c) => {
+    const { content } = await c.req.json();
+    const newPost = await db
+      .insert(posts)
+      .values({
+        content,
+        date: new Date(),
+      })
+      .returning()
+      .get();
 
-    const { id } = c.req.valid("param"); 
-    const { content } = c.req.valid("json"); 
-    try {
-      const updatedPost = await db
-        .update(posts)
-        .set({ content })
-        .where(eq(posts.id, id))
-        .returning()
-        .get();
-      if (!updatedPost) {
-        return c.json({ error: "Post not found" }, 404);
-      }
-      return c.json(updatedPost);
-    } catch (error) {
-      console.error(`Error updating post ${id}:`, error);
-      return c.json({ error: "Failed to update post" }, 500);
+    return c.json(newPost); 
+  }
+);
+
+// Update a post by id
+postRoutes.patch(
+  "/posts/:id",
+  zValidator("param", getPostSchema),
+  zValidator("json", updatePostSchema),
+  async (c) => {
+    const id = parseInt(c.req.param("id"));
+    const { content } = await c.req.json();
+    const updatedPost = await db
+      .update(posts)
+      .set({ content })
+      .where(eq(posts.id, id))
+      .returning()
+      .get();
+
+    if (!updatedPost) {
+      throw new HTTPException(404, { message: "Post not found" });
     }
-  });
+    return c.json(updatedPost);
+  },
+);
 
-export default postsRoute;
+export default postRoutes;
